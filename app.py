@@ -1,7 +1,11 @@
 import cv2
+import picamera
+import picamera.array
 import mediapipe as mp
 import numpy as np
 import tkinter as tk
+from PIL import Image, ImageTk
+from tkinter import ttk, messagebox  # Added messagebox import
 import os
 import json
 from datetime import datetime
@@ -25,23 +29,14 @@ def warp_cheek_to_square(cheek_points, image):
     if len(cheek_points) != 4:
         return None  # Ensure exactly 4 points
 
-    # Define the destination square (100x100 pixels)
     target_square = np.array([[0, 0], [99, 0], [99, 99], [0, 99]], dtype=np.float32)
-
-    # Convert cheek points to a float32 NumPy array
     cheek_points = np.array(cheek_points, dtype=np.float32)
-
-    # Compute perspective transform matrix
     M = cv2.getPerspectiveTransform(cheek_points, target_square)
-
-    # Apply transformation to get a squared cheek region
     warped_cheek = cv2.warpPerspective(image, M, (100, 100))
-    
     return warped_cheek
 
 def process_frame(image):
     h, w, _ = image.shape
-    # Convert to RGB as required by MediaPipe
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     results = face_mesh.process(image_rgb)
     annotated_image = image.copy()
@@ -49,7 +44,6 @@ def process_frame(image):
 
     if results.multi_face_landmarks:
         for face_landmarks in results.multi_face_landmarks:
-            # Draw face mesh landmarks for feedback
             mp_drawing.draw_landmarks(
                 image=annotated_image,
                 landmark_list=face_landmarks,
@@ -57,7 +51,6 @@ def process_frame(image):
                 landmark_drawing_spec=mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=1, circle_radius=1),
                 connection_drawing_spec=mp_drawing.DrawingSpec(color=(0, 0, 255), thickness=1, circle_radius=1)
             )
-            # Extract points corresponding to left cheek indices
             points = [[int(face_landmarks.landmark[i].x * w), int(face_landmarks.landmark[i].y * h)] 
                       for i in left_cheek_indices]
 
@@ -66,32 +59,22 @@ def process_frame(image):
                 hull = cv2.convexHull(points)
                 mask = np.zeros((h, w), dtype=np.uint8)
                 cv2.fillConvexPoly(mask, hull, 255)
-
-                # Apply mask to get the full cheek region from the frame
                 cheek_full = cv2.bitwise_and(image, image, mask=mask)
                 x, y, w_box, h_box = cv2.boundingRect(hull)
                 cheek_region = cheek_full[y:y+h_box, x:x+w_box]
 
                 if cheek_region is not None and cheek_region.size > 0:
-                    # Warp cheek to a square
                     warped_cheek = warp_cheek_to_square(points, image)
-
                     if warped_cheek is not None:
-                        cheek_region = warped_cheek  # Replace with squared cheek
-
+                        cheek_region = warped_cheek
     return annotated_image, cheek_region
 
 def save_cheek_image(cheek_image):
-    # Create a directory to save images if it doesn't exist
     save_dir = "saved_cheeks"
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
-    
-    # Generate a filename with timestamp
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"{save_dir}/cheek_{timestamp}.jpg"
-    
-    # Save the image
     if cheek_image is not None and cheek_image.size > 0:
         cv2.imwrite(filename, cheek_image)
         return filename
@@ -100,16 +83,11 @@ def save_cheek_image(cheek_image):
 
 def save_lab_values(cheek_image):
     lab_values = extract_lab_from_image(cheek_image)
-    # Create a directory to save lab values if it doesn't exist
     lab_dir = "lab_values"
     if not os.path.exists(lab_dir):
         os.makedirs(lab_dir)
-    
-    # Generate a filename with timestamp
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     lab_filename = f"{lab_dir}/lab_{timestamp}.json"
-    
-    # Save the lab values to a JSON file
     if lab_values:
         with open(lab_filename, 'w') as f:
             json.dump({"lab_values": lab_values}, f, indent=4)
@@ -119,75 +97,181 @@ def save_lab_values(cheek_image):
     else:
         return "No valid lab values to save"
 
+def show_foundation_matches_window(matching_foundations):
+    window = tk.Tk()
+    window.attributes("-fullscreen", True)
+    window.configure(bg="white")
+
+    def exit_app():
+        window.destroy()
+
+    # Title
+    title = tk.Label(window, text="YOUR SHADE MATCH", font=("Georgia", 32, "bold"), bg="white")
+    title.pack(pady=(40, 20))
+
+    # Section frame
+    section = tk.Frame(window, bg="white")
+    section.pack()
+
+    def create_foundation_column(frame, title_text, match_key, shade_label):
+        col = tk.Frame(frame, bg="white")
+        tk.Label(col, text=title_text, font=("Helvetica", 14, "bold"), bg="white").pack()
+
+        img_path = matching_foundations[match_key][3]
+        img = Image.open(img_path).resize((100, 130))
+        photo = ImageTk.PhotoImage(img)
+        img_label = tk.Label(col, image=photo, bg="white")
+        img_label.image = photo
+        img_label.pack()
+
+        tk.Label(col, text=matching_foundations[match_key][0], font=("Georgia", 16, "bold"), fg="#cb4d4d", bg="white").pack()
+        tk.Label(col, text=shade_label, font=("Georgia", 12, "italic"), fg="#cb4d4d", bg="white").pack()
+        return col
+
+    # Top row (best matches)
+    top_row = tk.Frame(section, bg="white")
+    top_row.pack(pady=20)
+
+    create_foundation_column(top_row, "for dry to normal skin", "dry_best", "neutral tone").pack(side="left", padx=50)
+    create_foundation_column(top_row, "for oily to normal skin", "oily_best", "warm tone").pack(side="left", padx=50)
+
+    # Note
+    tk.Label(section, text="If you are acidic or tend to oxidize, try a lighter shade than your shade match:",
+             font=("Helvetica", 11), bg="white", wraplength=700).pack(pady=(30, 10))
+
+    # Bottom row (lighter matches)
+    bottom_row = tk.Frame(section, bg="white")
+    bottom_row.pack(pady=10)
+
+    create_foundation_column(bottom_row, "", "dry_lighter", "neutral light").pack(side="left", padx=50)
+    create_foundation_column(bottom_row, "", "oily_lighter", "warm light").pack(side="left", padx=50)
+
+    # Action buttons
+    button_frame = tk.Frame(window, bg="white")
+    button_frame.pack(pady=(40, 20))
+
+    exit_button = tk.Button(button_frame, text="EXIT", font=("Helvetica", 12), bg="white", fg="gray",
+                            relief="flat", command=exit_app)
+    exit_button.pack()
+
+    window.mainloop()
+
+
 def main():
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        print("Error opening camera")
-        return
-    
-    # Variable to store the current cheek image
-    current_cheek = None
+    # Use the PiCamera instead of the default OpenCV camera capture
+    with picamera.PICamera() as camera:
+        camera.resolution = (640, 480)
+        camera.framerate = 30
+        with picamera.array.PiRGBArray(camera) as stream:
+            
+            # Create a full-screen named window for OpenCV
+            cv2.namedWindow("Live Face Mesh", cv2.WND_PROP_FULLSCREEN)
+            cv2.setWindowProperty("Live Face Mesh", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            print("Unable to read from camera")
-            break
+            current_cheek = None
 
-        # Process the current frame
-        annotated, cheek = process_frame(frame)
-        current_cheek = cheek  # Store the current cheek image
-        
-        # Overlay prompt text for the user
-        cv2.putText(annotated, "Position your face", (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-        cv2.putText(annotated, "Press 'S' to save cheek image", (10, 60),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        cv2.imshow("Live Face Mesh", annotated)
+            while True:
+                camera.capture(stream, format="bgr")
+                frame = stream.array
+                stream.truncate(0)
 
-        # Show the extracted and transformed cheek region (if available)
-        if cheek is not None:
-            cv2.imshow("Extracted Cheek (Warped to Square)", cheek)
-        else:
-            cv2.imshow("Extracted Cheek", np.zeros((100, 100, 3), dtype=np.uint8))
+                annotated, cheek = process_frame(frame)
+                current_cheek = cheek
 
-        # Check for key presses
-        key = cv2.waitKey(1) & 0xFF
-        
-        # Exit on pressing the ESC key (ASCII 27)
-        if key == 27:
-            break
-        # Save cheek image on pressing 'S' key
-        elif key == ord('s') or key == ord('S'):
-            result = save_cheek_image(current_cheek)
-            lab_values = save_lab_values(result)
-            matching_foundations = find_matching_foundations(lab_values)
-            print(matching_foundations)
+                cv2.putText(annotated, "Position your face", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 1)
+                cv2.putText(annotated, "Press 'S' to save cheek image", (10, 60),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                cv2.imshow("Live Face Mesh", annotated)
 
+                key = cv2.waitKey(1) & 0xFF
 
-            print(result)
-            # Display save confirmation
-            save_notification = np.zeros((100, 400, 3), dtype=np.uint8)
-            cv2.putText(save_notification, result, (10, 50), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
-            cv2.imshow("Save Status", save_notification)
-            cv2.waitKey(1500)  # Display for 1.5 seconds
-            cv2.destroyWindow("Save Status")
+                if key == 27:  # ESC key to exit
+                    break
+                elif key == ord('s') or key == ord('S'):
+                    result = save_cheek_image(current_cheek)
+                    lab_filename, lab_values = save_lab_values(result)
+                    matching_foundations = find_matching_foundations(lab_filename)
+                    print(matching_foundations)
 
-    cap.release()
-    cv2.destroyAllWindows()
+                    # Create a temporary Tkinter window (hidden) to show the suggestions
+                    show_foundation_matches_window(matching_foundations)
 
-# --- Tkinter GUI for "Start" button ---
+            cv2.destroyAllWindows()
+
 def start_app():
     root.destroy()  # close the start window
     main()          # start the main camera loop
 
 if __name__ == "__main__":
-    # Create a simple Tkinter window with a Start button
     root = tk.Tk()
-    root.title("Face Detection Start")
-    label = tk.Label(root, text="Click 'Start' to begin face detection", font=("Helvetica", 16))
-    label.pack(padx=20, pady=20)
-    start_button = tk.Button(root, text="Start", command=start_app, font=("Helvetica", 14))
-    start_button.pack(padx=20, pady=20)
+    root.attributes("-fullscreen", True)
+    root.title("Liquid Foundation Shade Matching")
+    
+    # Load the original background image
+    bg_image = Image.open("bg.jpg")
+    
+    # Create a canvas that fills the window
+    canvas = tk.Canvas(root, highlightthickness=0)
+    canvas.pack(fill="both", expand=True)
+    
+    # Place the initial background image on the canvas
+    bg_photo = ImageTk.PhotoImage(bg_image)
+    bg_img_id = canvas.create_image(0, 0, image=bg_photo, anchor="nw")
+    canvas.bg_photo = bg_photo  # Keep a reference to prevent garbage collection
+
+    # Add the white text (initial position; will update on resize)
+    text_id = canvas.create_text(
+        root.winfo_width() // 2, 300,
+        text="LIQUID\nFOUNDATION\nSHADE\nMATCHING",
+        fill="brown",
+        font=("Georgia", 38, "bold"),
+        justify="center"
+    )
+
+    # Define the function that resizes the background and adjusts text/button positions
+    def resize_bg(event):
+        new_width = event.width
+        new_height = event.height
+
+        # Resize and update the background image
+        resized_image = bg_image.resize((new_width, new_height), Image.LANCZOS)
+        new_bg_photo = ImageTk.PhotoImage(resized_image)
+        canvas.bg_photo = new_bg_photo  # update reference
+        canvas.itemconfig(bg_img_id, image=new_bg_photo)
+
+        # Center the text; adjust vertical position based on canvas height
+        canvas.coords(text_id, new_width / 2, new_height * 0.3)
+        
+        # Also move the button if it's already created
+        if hasattr(canvas, "button_window"):
+            canvas.coords(canvas.button_window, new_width / 2, new_height * 0.8)
+
+    canvas.bind("<Configure>", resize_bg)
+
+    # Add custom styled button
+    def on_click():
+        start_app()
+
+    button = tk.Button(
+        root,
+        text="Match your Shade  ➔",
+        font=("Helvetica", 24, "bold"),  # increased font size
+        bg="#bb7b3f",
+        fg="white",
+        bd=0,
+        activebackground="#a56a32",
+        activeforeground="white",
+        relief="flat",
+        padx=20,  # extra horizontal padding
+        pady=10,  # extra vertical padding
+        command=on_click
+    )
+
+    # Place the button on the canvas using a window and tag it for repositioning
+    canvas.button_window = canvas.create_window(
+        root.winfo_width() // 2, 680,
+        window=button
+    )
+    
     root.mainloop()

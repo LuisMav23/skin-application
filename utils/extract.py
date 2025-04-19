@@ -3,54 +3,96 @@ import cv2
 import json
 import numpy as np
 
-def find_matching_foundations(lab_values_file, foundations_db='lab_values.csv', top_n=5):
+def find_matching_foundations(lab_values_file, oily_db='oily.csv', drytonormal_db='dry_to_normal.csv'):
     """
-    Find the top N foundations that match the skin color in the given LAB values file.
+    Find the top match and a lighter shade for both oily foundations and dry-to-normal foundations.
+    The function returns a dictionary with 4 foundation matches:
+      - 'oily_best': best match from oily_db (lowest distance)
+      - 'oily_lighter': first oily foundation with an L value higher than the best match
+      - 'dry_best': best match from drytonormal_db (lowest distance)
+      - 'dry_lighter': first dry-to-normal foundation with an L value higher than the best match
+    Each match is a tuple: (foundation_name, distance, lab_values, image_path).
+    If a lighter shade is not found, the best match is returned as the lighter option.
     
-    :param lab_values_file: Path to the JSON file containing LAB values of the skin
-    :param foundations_db: Path to the CSV file containing foundation LAB values
-    :param top_n: Number of top matches to return
-    :return: List of tuples (foundation_name, distance) sorted by closest match first
+    :param lab_values_file: Path to the JSON file containing skin LAB values (with key 'lab_values')
+    :param oily_db: Path to the CSV file for oily foundations (columns: Name, L, A, B)
+    :param drytonormal_db: Path to the CSV file for dry-to-normal foundations (columns: Name, L, A, B)
+    :return: Dictionary with the four foundation matches.
     """
     # Load the skin LAB values
     try:
         with open(lab_values_file, 'r') as f:
             skin_data = json.load(f)
-        
         if 'lab_values' not in skin_data:
             print(f"Error: 'lab_values' key not found in {lab_values_file}")
-            return []
-            
+            return {}
         skin_lab = skin_data['lab_values']
     except Exception as e:
         print(f"Error loading skin LAB values: {e}")
-        return []
-    
-    # Load the foundation database from CSV
-    try:
+        return {}
+
+    def process_db(csv_file):
+        """
+        Process a CSV file to compute Euclidean distances of foundation LAB values relative to skin_lab.
+        Returns a tuple (best_match, lighter_match). Each match is a tuple: 
+            (foundation_name, distance, lab_values, image_path)
+        """
         foundations = []
-        with open(foundations_db, 'r') as f:
-            # Skip header row
-            next(f)
-            for line in f:
-                parts = line.strip().split(',')
-                if len(parts) >= 4:  # Name, L, A, B
-                    name = parts[0]
-                    lab_values = [float(parts[1]), float(parts[2]), float(parts[3])]
-                    foundations.append((name, lab_values))
-    except Exception as e:
-        print(f"Error loading foundation database: {e}")
-        return []
-    
-    # Calculate Euclidean distance for each foundation
-    distances = []
-    for foundation_name, foundation_lab in foundations:
-        # Calculate Euclidean distance between skin and foundation LAB values
-        distance = np.sqrt(sum((a - b) ** 2 for a, b in zip(skin_lab, foundation_lab)))
-        distances.append((foundation_name, distance))
-    
-    # Sort by distance (closest match first) and return top N
-    return sorted(distances, key=lambda x: x[1])[:top_n]
+        try:
+            with open(csv_file, 'r') as f:
+                # Skip header row
+                next(f)
+                for line in f:
+                    parts = line.strip().split(',')
+                    if len(parts) >= 4:  # Columns: Name, L, A, B
+                        name = parts[0]
+                        try:
+                            lab_values = [float(parts[1]), float(parts[2]), float(parts[3])]
+                        except ValueError:
+                            continue
+                        # Euclidean distance calculation
+                        distance = np.sqrt(sum((s - l) ** 2 for s, l in zip(skin_lab, lab_values)))
+                        foundations.append((name, distance, lab_values))
+        except Exception as e:
+            print(f"Error loading foundation database from {csv_file}: {e}")
+            return None, None
+
+        if not foundations:
+            return None, None
+
+        # Sort foundations by distance (ascending)
+        foundations_sorted = sorted(foundations, key=lambda x: x[1])
+        best_match = foundations_sorted[0]
+        best_L = best_match[2][0]
+
+        # Find the first foundation with a higher L value (lighter shade) than best_match
+        lighter_match = None
+        for candidate in foundations_sorted:
+            if candidate[2][0] > best_L:
+                lighter_match = candidate
+                break
+        # If not found, use best_match as lighter_match as well.
+        if lighter_match is None:
+            lighter_match = best_match
+
+        # Append image_path to each match
+        def append_image(match):
+            name, distance, lab_values = match
+            image_path = f"foundation-pictures/{name}/{name}.jpg"
+            return (name, distance, lab_values, image_path)
+
+        return append_image(best_match), append_image(lighter_match)
+
+    oily_best, oily_lighter = process_db(oily_db)
+    dry_best, dry_lighter = process_db(drytonormal_db)
+
+    results = {
+        'oily_best': oily_best,        # (name, distance, [L, A, B], image_path)
+        'oily_lighter': oily_lighter,  # (name, distance, [L, A, B], image_path)
+        'dry_best': dry_best,          # (name, distance, [L, A, B], image_path)
+        'dry_lighter': dry_lighter     # (name, distance, [L, A, B], image_path)
+    }
+    return results
 
 
 def extract_lab_from_image(image_path):
