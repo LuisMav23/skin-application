@@ -2,6 +2,7 @@ import os
 import cv2
 import json
 import numpy as np
+import math
 
 def find_matching_foundations(lab_values_file, oily_db='oily.csv', drytonormal_db='dry_to_normal.csv'):
     """
@@ -50,8 +51,8 @@ def find_matching_foundations(lab_values_file, oily_db='oily.csv', drytonormal_d
                             lab_values = [float(parts[1]), float(parts[2]), float(parts[3])]
                         except ValueError:
                             continue
-                        # Euclidean distance calculation
-                        distance = np.sqrt(sum((s - l) ** 2 for s, l in zip(skin_lab, lab_values)))
+                        # Euclidean distance calculation using math.dist
+                        distance = math.dist(skin_lab, lab_values)
                         foundations.append((name, distance, lab_values))
         except Exception as e:
             print(f"Error loading foundation database from {csv_file}: {e}")

@@ -1,6 +1,4 @@
 import cv2
-import picamera
-import picamera.array
 import mediapipe as mp
 import numpy as np
 import tkinter as tk
@@ -10,6 +8,10 @@ import os
 import json
 from datetime import datetime
 from utils.extract import extract_lab_from_image, find_matching_foundations
+from picamera import PiCamera
+from picamera.array import PiRGBArray
+import time
+import threading
 
 # --- Initialize MediaPipe Face Mesh and Drawing utilities ---
 mp_face_mesh = mp.solutions.face_mesh
@@ -22,8 +24,7 @@ face_mesh = mp_face_mesh.FaceMesh(
     min_tracking_confidence=0.5
 )
 
-# Left cheek landmark indices
-left_cheek_indices = [120, 117, 187, 203]
+left_cheek_indices = [120, 116, 213, 203]
 
 def warp_cheek_to_square(cheek_points, image):
     if len(cheek_points) != 4:
@@ -61,9 +62,10 @@ def process_frame(image):
                 cv2.fillConvexPoly(mask, hull, 255)
                 cheek_full = cv2.bitwise_and(image, image, mask=mask)
                 x, y, w_box, h_box = cv2.boundingRect(hull)
-                cheek_region = cheek_full[y:y+h_box, x:x+w_box]
+                unwarped_cheek = cheek_full[y:y+h_box, x:x+w_box]
 
-                if cheek_region is not None and cheek_region.size > 0:
+                # Optionally warp the cheek region into a square
+                if unwarped_cheek is not None and unwarped_cheek.size > 0:
                     warped_cheek = warp_cheek_to_square(points, image)
                     if warped_cheek is not None:
                         cheek_region = warped_cheek
@@ -98,7 +100,7 @@ def save_lab_values(cheek_image):
         return "No valid lab values to save"
 
 def show_foundation_matches_window(matching_foundations):
-    window = tk.Tk()
+    window = tk.Toplevel()
     window.attributes("-fullscreen", True)
     window.configure(bg="white")
 
@@ -156,48 +158,71 @@ def show_foundation_matches_window(matching_foundations):
 
     window.mainloop()
 
-
 def main():
-    # Use the PiCamera instead of the default OpenCV camera capture
-    with picamera.PICamera() as camera:
-        camera.resolution = (640, 480)
-        camera.framerate = 30
-        with picamera.array.PiRGBArray(camera) as stream:
-            
-            # Create a full-screen named window for OpenCV
-            cv2.namedWindow("Live Face Mesh", cv2.WND_PROP_FULLSCREEN)
-            cv2.setWindowProperty("Live Face Mesh", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 
-            current_cheek = None
+    # Initialize PiCamera
+    camera = PiCamera()
+    camera.resolution = (640, 480)
+    rawCapture = PiRGBArray(camera, size=(640, 480))
+    time.sleep(0.1)
 
-            while True:
-                camera.capture(stream, format="bgr")
-                frame = stream.array
-                stream.truncate(0)
+    # Create a Tkinter window to display the video feed
+    video_window = tk.Tk()
+    video_window.attributes("-fullscreen", True)
+    video_window.title("Live Face Mesh")
 
-                annotated, cheek = process_frame(frame)
-                current_cheek = cheek
+    # Label to show video frames
+    video_label = tk.Label(video_window)
+    video_label.pack(expand=True, fill="both")
 
-                cv2.putText(annotated, "Position your face", (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 1)
-                cv2.putText(annotated, "Press 'S' to save cheek image", (10, 60),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-                cv2.imshow("Live Face Mesh", annotated)
+    # Use a mutable container for the current cheek image
+    current_cheek = [None]
 
-                key = cv2.waitKey(1) & 0xFF
+    def save_button_callback():
+        if current_cheek[0] is None:
+            print("No cheek image available.")
+            return
+        result = save_cheek_image(current_cheek[0])
+        lab_filename, _ = save_lab_values(result)
+        print(lab_filename)
+        matching_foundations = find_matching_foundations(lab_filename)
+        print(matching_foundations)
+        show_foundation_matches_window(matching_foundations)
 
-                if key == 27:  # ESC key to exit
-                    break
-                elif key == ord('s') or key == ord('S'):
-                    result = save_cheek_image(current_cheek)
-                    lab_filename, lab_values = save_lab_values(result)
-                    matching_foundations = find_matching_foundations(lab_filename)
-                    print(matching_foundations)
+    # Button to trigger saving the cheek image
+    save_button = tk.Button(video_window, text="Save Cheek Image", font=("Helvetica", 14), bg="#bb7b3f",
+                            fg="white", command=save_button_callback)
+    save_button.pack(side="bottom", pady=20)
 
-                    # Create a temporary Tkinter window (hidden) to show the suggestions
-                    show_foundation_matches_window(matching_foundations)
+    # Function to continuously update frames from PiCamera
+    def update_loop():
+        try:
+            for frame in camera.capture_continuous(rawCapture, format="bgr", use_video_port=True):
+                image = frame.array
+                annotated, cheek = process_frame(image)
+                current_cheek[0] = cheek
 
-            cv2.destroyAllWindows()
+                # Convert the annotated frame for display in Tkinter
+                annotated_rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+                im = Image.fromarray(annotated_rgb)
+                imgtk = ImageTk.PhotoImage(image=im)
+                video_label.imgtk = imgtk  # prevent garbage collection
+                video_label.config(image=imgtk)
+                
+                # Clear the stream for next frame
+                rawCapture.truncate(0)
+                
+                # Allow other Tkinter events to run
+                video_window.update_idletasks()
+                video_window.update()
+        except tk.TclError:
+            # Window has been closed
+            camera.close()
+
+    # Run the update_loop in a background thread
+    threading.Thread(target=update_loop, daemon=True).start()
+
+    video_window.mainloop()
 
 def start_app():
     root.destroy()  # close the start window
