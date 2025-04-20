@@ -9,11 +9,10 @@ def find_matching_foundations(lab_values_file, oily_db='oily.csv', drytonormal_d
     Find the top match and a lighter shade for both oily foundations and dry-to-normal foundations.
     The function returns a dictionary with 4 foundation matches:
       - 'oily_best': best match from oily_db (lowest distance)
-      - 'oily_lighter': first oily foundation with an L value higher than the best match
+      - 'oily_lighter': first oily foundation with an L value higher than the best match, or None if not found
       - 'dry_best': best match from drytonormal_db (lowest distance)
-      - 'dry_lighter': first dry-to-normal foundation with an L value higher than the best match
+      - 'dry_lighter': first dry-to-normal foundation with an L value higher than the best match, or None if not found
     Each match is a tuple: (foundation_name, distance, lab_values, image_path).
-    If a lighter shade is not found, the best match is returned as the lighter option.
     
     :param lab_values_file: Path to the JSON file containing skin LAB values (with key 'lab_values')
     :param oily_db: Path to the CSV file for oily foundations (columns: Name, L, A, B)
@@ -37,6 +36,7 @@ def find_matching_foundations(lab_values_file, oily_db='oily.csv', drytonormal_d
         Process a CSV file to compute Euclidean distances of foundation LAB values relative to skin_lab.
         Returns a tuple (best_match, lighter_match). Each match is a tuple: 
             (foundation_name, distance, lab_values, image_path)
+        If no lighter shade is found, lighter_match is set to None.
         """
         foundations = []
         try:
@@ -51,7 +51,6 @@ def find_matching_foundations(lab_values_file, oily_db='oily.csv', drytonormal_d
                             lab_values = [float(parts[1]), float(parts[2]), float(parts[3])]
                         except ValueError:
                             continue
-                        # Euclidean distance calculation using math.dist
                         distance = math.dist(skin_lab, lab_values)
                         foundations.append((name, distance, lab_values))
         except Exception as e:
@@ -61,23 +60,20 @@ def find_matching_foundations(lab_values_file, oily_db='oily.csv', drytonormal_d
         if not foundations:
             return None, None
 
-        # Sort foundations by distance (ascending)
         foundations_sorted = sorted(foundations, key=lambda x: x[1])
         best_match = foundations_sorted[0]
         best_L = best_match[2][0]
 
-        # Find the first foundation with a higher L value (lighter shade) than best_match
+        # Find the first foundation with a higher L value than best_match
         lighter_match = None
         for candidate in foundations_sorted:
             if candidate[2][0] > best_L:
                 lighter_match = candidate
                 break
-        # If not found, use best_match as lighter_match as well.
-        if lighter_match is None:
-            lighter_match = best_match
 
-        # Append image_path to each match
         def append_image(match):
+            if match is None:
+                return None
             name, distance, lab_values = match
             image_path = f"foundation-pictures/{name}/{name}.jpg"
             return (name, distance, lab_values, image_path)
@@ -89,9 +85,9 @@ def find_matching_foundations(lab_values_file, oily_db='oily.csv', drytonormal_d
 
     results = {
         'oily_best': oily_best,        # (name, distance, [L, A, B], image_path)
-        'oily_lighter': oily_lighter,  # (name, distance, [L, A, B], image_path)
+        'oily_lighter': oily_lighter,  # (name, distance, [L, A, B], image_path) or None if not found
         'dry_best': dry_best,          # (name, distance, [L, A, B], image_path)
-        'dry_lighter': dry_lighter     # (name, distance, [L, A, B], image_path)
+        'dry_lighter': dry_lighter     # (name, distance, [L, A, B], image_path) or None if not found
     }
     return results
 

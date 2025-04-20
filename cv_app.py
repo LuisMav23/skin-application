@@ -2,26 +2,14 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import tkinter as tk
-from PIL import Image   # Removed ImageTk import
+from PIL import Image, ImageTk
 from tkinter import ttk, messagebox  # Added messagebox import
 import os
 import json
 from datetime import datetime
 from utils.extract import extract_lab_from_image, find_matching_foundations
-from picamera import PiCamera
-from picamera.array import PiRGBArray
-import time
-import threading
 import io
 import base64
-
-# Helper function to convert a PIL Image to a tk.PhotoImage without using ImageTk
-def pil_to_tk(image):
-    with io.BytesIO() as output:
-        image.save(output, format="PNG")
-        data = output.getvalue()
-    b64_data = base64.b64encode(data)
-    return tk.PhotoImage(data=b64_data)
 
 # --- Initialize MediaPipe Face Mesh and Drawing utilities ---
 mp_face_mesh = mp.solutions.face_mesh
@@ -34,7 +22,15 @@ face_mesh = mp_face_mesh.FaceMesh(
     min_tracking_confidence=0.5
 )
 
-left_cheek_indices = [120, 116, 213, 203]
+def pil_to_tk(image):
+    with io.BytesIO() as output:
+        image.save(output, format="PNG")
+        data = output.getvalue()
+    b64_data = base64.b64encode(data)
+    return tk.PhotoImage(data=b64_data)
+
+# Left cheek landmark indices
+left_cheek_indices = [120, 117, 187, 203]
 
 def warp_cheek_to_square(cheek_points, image):
     if len(cheek_points) != 4:
@@ -72,10 +68,9 @@ def process_frame(image):
                 cv2.fillConvexPoly(mask, hull, 255)
                 cheek_full = cv2.bitwise_and(image, image, mask=mask)
                 x, y, w_box, h_box = cv2.boundingRect(hull)
-                unwarped_cheek = cheek_full[y:y+h_box, x:x+w_box]
+                cheek_region = cheek_full[y:y+h_box, x:x+w_box]
 
-                # Optionally warp the cheek region into a square
-                if unwarped_cheek is not None and unwarped_cheek.size > 0:
+                if cheek_region is not None and cheek_region.size > 0:
                     warped_cheek = warp_cheek_to_square(points, image)
                     if warped_cheek is not None:
                         cheek_region = warped_cheek
@@ -129,15 +124,27 @@ def show_foundation_matches_window(matching_foundations):
         col = tk.Frame(frame, bg="white")
         tk.Label(col, text=title_text, font=("Helvetica", 14, "bold"), bg="white").pack()
 
-        img_path = matching_foundations[match_key][3]
-        img = Image.open(img_path).resize((100, 130))
-        photo = pil_to_tk(img)
-        img_label = tk.Label(col, image=photo, bg="white")
-        img_label.image = photo
-        img_label.pack()
+        foundation = matching_foundations.get(match_key)
+        if foundation is None:
+            tk.Label(col, text="Not available", font=("Georgia", 16, "bold"),
+                     fg="#cb4d4d", bg="white").pack(pady=10)
+            return col
 
-        tk.Label(col, text=matching_foundations[match_key][0], font=("Georgia", 16, "bold"), fg="#cb4d4d", bg="white").pack()
-        tk.Label(col, text=shade_label, font=("Georgia", 12, "italic"), fg="#cb4d4d", bg="white").pack()
+        img_path = foundation[3]
+        try:
+            img = Image.open(img_path).resize((100, 130))
+            photo = pil_to_tk(img)
+            img_label = tk.Label(col, image=photo, bg="white")
+            img_label.image = photo  # Prevent garbage collection
+            img_label.pack()
+        except Exception as e:
+            tk.Label(col, text="Image error", font=("Georgia", 12),
+                     fg="#cb4d4d", bg="white").pack(pady=10)
+
+        tk.Label(col, text=foundation[0], font=("Georgia", 16, "bold"),
+                 fg="#cb4d4d", bg="white").pack()
+        tk.Label(col, text=shade_label, font=("Georgia", 12, "italic"),
+                 fg="#cb4d4d", bg="white").pack()
         return col
 
     # Top row (best matches)
@@ -148,7 +155,8 @@ def show_foundation_matches_window(matching_foundations):
     create_foundation_column(top_row, "for oily to normal skin", "oily_best", "warm tone").pack(side="left", padx=50)
 
     # Note
-    tk.Label(section, text="If you are acidic or tend to oxidize, try a lighter shade than your shade match:",
+    tk.Label(section,
+             text="If you are acidic or tend to oxidize, try a lighter shade than your shade match:",
              font=("Helvetica", 11), bg="white", wraplength=700).pack(pady=(30, 10))
 
     # Bottom row (lighter matches)
@@ -169,11 +177,10 @@ def show_foundation_matches_window(matching_foundations):
     window.mainloop()
 
 def main():
-    # Initialize PiCamera
-    camera = PiCamera()
-    camera.resolution = (640, 480)
-    rawCapture = PiRGBArray(camera, size=(640, 480))
-    time.sleep(0.1)
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("Error: Camera could not be opened.")
+        return
 
     # Create a Tkinter window to display the video feed
     video_window = tk.Tk()
@@ -199,38 +206,38 @@ def main():
         show_foundation_matches_window(matching_foundations)
 
     # Button to trigger saving the cheek image
-    save_button = tk.Button(video_window, text="Save Cheek Image", font=("Helvetica", 14), bg="#bb7b3f",
-                            fg="white", command=save_button_callback)
+    save_button = tk.Button(
+        video_window,
+        text="Save Cheek Image",
+        font=("Helvetica", 14),
+        bg="#bb7b3f",
+        fg="white",
+        command=save_button_callback
+    )
     save_button.pack(side="bottom", pady=20)
 
-    # Function to continuously update frames from PiCamera
     def update_loop():
-        try:
-            for frame in camera.capture_continuous(rawCapture, format="bgr", use_video_port=True):
-                image = frame.array
-                annotated, cheek = process_frame(image)
-                current_cheek[0] = cheek
+        ret, frame = cap.read()
+        if ret:
+            annotated, cheek = process_frame(frame)
+            current_cheek[0] = cheek
 
-                # Convert the annotated frame for display in Tkinter
-                annotated_rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
-                im = Image.fromarray(annotated_rgb)
-                imgtk = pil_to_tk(im)
-                video_label.imgtk = imgtk  # Prevent garbage collection
-                video_label.config(image=imgtk)
-                
-                # Clear the stream for next frame
-                rawCapture.truncate(0)
-                
-                # Allow other Tkinter events to run
-                video_window.update_idletasks()
-                video_window.update()
-        except tk.TclError:
-            # Window has been closed
-            camera.close()
+            # Convert the annotated frame for display in Tkinter
+            annotated_rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+            im = Image.fromarray(annotated_rgb)
+            imgtk = ImageTk.PhotoImage(image=im)
+            video_label.imgtk = imgtk  # Prevent garbage collection
+            video_label.config(image=imgtk)
+        else:
+            print("Error: Frame not read properly.")
+            cap.release()
+            video_window.destroy()
+            return
 
-    # Run the update_loop in a background thread
-    threading.Thread(target=update_loop, daemon=True).start()
+        # Schedule the next frame update after 15ms
+        video_window.after(15, update_loop)
 
+    update_loop()
     video_window.mainloop()
 
 def start_app():
@@ -242,15 +249,15 @@ if __name__ == "__main__":
     root.attributes("-fullscreen", True)
     root.title("Liquid Foundation Shade Matching")
     
-    # Load the original background image using PIL
+    # Load the original background image
     bg_image = Image.open("bg.jpg")
     
     # Create a canvas that fills the window
     canvas = tk.Canvas(root, highlightthickness=0)
     canvas.pack(fill="both", expand=True)
     
-    # Convert the background image to a tk.PhotoImage without ImageTk
-    bg_photo = pil_to_tk(bg_image)
+    # Place the initial background image on the canvas
+    bg_photo = ImageTk.PhotoImage(bg_image)
     bg_img_id = canvas.create_image(0, 0, image=bg_photo, anchor="nw")
     canvas.bg_photo = bg_photo  # Keep a reference to prevent garbage collection
 
@@ -270,7 +277,7 @@ if __name__ == "__main__":
 
         # Resize and update the background image
         resized_image = bg_image.resize((new_width, new_height), Image.LANCZOS)
-        new_bg_photo = pil_to_tk(resized_image)
+        new_bg_photo = ImageTk.PhotoImage(resized_image)
         canvas.bg_photo = new_bg_photo  # update reference
         canvas.itemconfig(bg_img_id, image=new_bg_photo)
 
