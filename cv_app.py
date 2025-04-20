@@ -182,63 +182,46 @@ def main():
         print("Error: Camera could not be opened.")
         return
 
-    # Create a Tkinter window to display the video feed
-    video_window = tk.Tk()
-    video_window.attributes("-fullscreen", True)
-    video_window.title("Live Face Mesh")
+    window_name = "Live Face Mesh"
+    cv2.namedWindow(window_name)
+    
+    capturing = True
+    current_cheek = None
 
-    # Label to show video frames
-    video_label = tk.Label(video_window)
-    video_label.pack(expand=True, fill="both")
+    # Mouse callback: on any left button click, stop capturing frames
+    def mouse_callback(event, x, y, flags, param):
+        nonlocal capturing
+        if event == cv2.EVENT_LBUTTONDOWN:
+            capturing = False
 
-    # Use a mutable container for the current cheek image
-    current_cheek = [None]
+    cv2.setMouseCallback(window_name, mouse_callback)
 
-    def save_button_callback():
-        if current_cheek[0] is None:
-            print("No cheek image available.")
-            return
-        result = save_cheek_image(current_cheek[0])
-        lab_filename, _ = save_lab_values(result)
-        print(lab_filename)
-        matching_foundations = find_matching_foundations(lab_filename)
-        print(matching_foundations)
-        show_foundation_matches_window(matching_foundations)
-
-    # Button to trigger saving the cheek image
-    save_button = tk.Button(
-        video_window,
-        text="Save Cheek Image",
-        font=("Helvetica", 14),
-        bg="#bb7b3f",
-        fg="white",
-        command=save_button_callback
-    )
-    save_button.pack(side="bottom", pady=20)
-
-    def update_loop():
+    while capturing:
         ret, frame = cap.read()
-        if ret:
-            annotated, cheek = process_frame(frame)
-            current_cheek[0] = cheek
+        if not ret:
+            print("Error: Could not read frame from camera.")
+            break
 
-            # Convert the annotated frame for display in Tkinter
-            annotated_rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
-            im = Image.fromarray(annotated_rgb)
-            imgtk = ImageTk.PhotoImage(image=im)
-            video_label.imgtk = imgtk  # Prevent garbage collection
-            video_label.config(image=imgtk)
-        else:
-            print("Error: Frame not read properly.")
-            cap.release()
-            video_window.destroy()
-            return
+        annotated, cheek = process_frame(frame)
+        current_cheek = cheek  # Update with the latest cheek image
 
-        # Schedule the next frame update after 15ms
-        video_window.after(15, update_loop)
+        cv2.imshow(window_name, annotated)
+        if cv2.waitKey(15) & 0xFF == 27:  # also allow the ESC key to exit
+            capturing = False
 
-    update_loop()
-    video_window.mainloop()
+    cap.release()
+    cv2.destroyAllWindows()
+
+    if current_cheek is None:
+        print("No cheek image captured.")
+        return
+
+    result = save_cheek_image(current_cheek)
+    lab_filename, _ = save_lab_values(result)
+    print(lab_filename)
+    matching_foundations = find_matching_foundations(lab_filename)
+    print(matching_foundations)
+    show_foundation_matches_window(matching_foundations)
 
 def start_app():
     root.destroy()  # close the start window
